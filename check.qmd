@@ -6,6 +6,10 @@ date-format: "YYYY年M月D日"
 format:
   docx:
     reference-doc: reference-win.docx
+language:
+  crossref-fig-title: "図"
+  crossref-tbl-title: "表"
+  crossref-eq-prefix: "式"
 execute:
   warning: false
   message: false
