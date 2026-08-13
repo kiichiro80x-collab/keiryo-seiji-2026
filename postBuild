@@ -1,0 +1,29 @@
+#!/bin/bash
+# =============================================================
+# Quarto CLI（公式ビルド）の導入
+#
+# conda-forge の quarto パッケージは deno バイナリを同梱しない
+# ケースがあるため、公式配布物を直接展開して使う。
+# =============================================================
+set -euo pipefail
+
+QUARTO_VERSION="1.10.18"
+
+# conda 環境の prefix（PATH が通っている場所）に入れる。
+# 取得できない場合は $HOME/.local にフォールバックする。
+PREFIX="${NB_PYTHON_PREFIX:-}"
+if [ -z "${PREFIX}" ] || [ ! -w "${PREFIX}/bin" ]; then
+  PREFIX="${HOME}/.local"
+fi
+mkdir -p "${PREFIX}/opt" "${PREFIX}/bin"
+
+echo ">>> Quarto ${QUARTO_VERSION} を ${PREFIX} に導入します"
+
+curl -fsSL \
+  "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-amd64.tar.gz" \
+  | tar -xz -C "${PREFIX}/opt"
+
+ln -sf "${PREFIX}/opt/quarto-${QUARTO_VERSION}/bin/quarto" "${PREFIX}/bin/quarto"
+
+echo ">>> 導入結果"
+"${PREFIX}/bin/quarto" --version
