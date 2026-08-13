@@ -48,7 +48,8 @@ source("setup.R")
 
 df <- readr::read_csv("data/sample.csv", show_col_types = FALSE)
 
-modelsummary::datasummary_skim(df, output = "flextable")
+desc_table(df, age, educ, turnout,
+           labels = c(age = "年齢", educ = "教育年数", turnout = "投票率"))
 ```
 
 @tbl-desc に示したとおり……
@@ -76,11 +77,14 @@ ggplot(df, aes(x = age, y = turnout)) +
 m1 <- lm(turnout ~ age, data = df)
 m2 <- lm(turnout ~ age + educ, data = df)
 
-modelsummary::modelsummary(
+modelsummary(
   list("モデル1" = m1, "モデル2" = m2),
-  output   = "flextable",
+  output   = "markdown",
   stars    = TRUE,
-  gof_omit = "AIC|BIC|Log.Lik|RMSE|F"
+  coef_map = c("age"  = "年齢",
+               "educ" = "教育年数",
+               "(Intercept)" = "定数項"),
+  gof_map  = c("nobs", "r.squared", "adj.r.squared")
 )
 ```
 
