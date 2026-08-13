@@ -28,7 +28,7 @@ knitr:
 #| echo: false
 
 cat("R        :", R.version.string, "\n")
-cat("Quarto   :", as.character(quarto::quarto_version()), "\n")
+cat("Quarto   :", system("quarto --version", intern = TRUE), "\n")
 cat("OS       :", R.version$platform, "\n")
 
 jp <- subset(systemfonts::system_fonts(), grepl("CJK", family))
