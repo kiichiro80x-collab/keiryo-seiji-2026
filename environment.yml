@@ -12,4 +12,3 @@ dependencies:
   - r-systemfonts
   - r-janitor
   - r-here
-  - quarto
