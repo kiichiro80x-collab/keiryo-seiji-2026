@@ -19,7 +19,7 @@ knitr:
 ---
 
 このファイルが Word 形式で出力され、以下がすべて正しく表示されていれば準備完了です。
-提出前に、日本語が文字化けしていないか目で確認してください。
+Word を開いたときに「破損しています」という警告が出ないことも確認してください。
 
 # 環境の確認
 
@@ -29,7 +29,6 @@ knitr:
 
 cat("R        :", R.version.string, "\n")
 cat("Quarto   :", system("quarto --version", intern = TRUE), "\n")
-cat("OS       :", R.version$platform, "\n")
 
 jp <- subset(systemfonts::system_fonts(), grepl("CJK", family))
 cat("日本語フォント:", if (nrow(jp) > 0) "あり" else "なし ← 要対応", "\n")
@@ -37,7 +36,7 @@ cat("日本語フォント:", if (nrow(jp) > 0) "あり" else "なし ← 要対
 
 # 日本語テキストの確認
 
-本文がゴシック体ではなく明朝体で、読める大きさで表示されていますか。
+本文が明朝体で、読める大きさで表示されていますか。
 本文中の `mean(df$age)` のようなインラインコードは等幅フォントになりますか。
 
 > 引用ブロックです。左に縦線が入っていれば正常です。
@@ -49,25 +48,24 @@ cat("日本語フォント:", if (nrow(jp) > 0) "あり" else "なし ← 要対
 #| tbl-cap: "記述統計量"
 
 library(tidyverse)
-library(flextable)
 
 df <- readr::read_csv("data/sample.csv", show_col_types = FALSE)
 
 df |>
   summarise(
     across(c(age, educ, turnout),
-           list(平均 = mean, 標準偏差 = sd, 最小 = min, 最大 = max))
+           list(平均 = mean, 標準偏差 = sd, 最小値 = min, 最大値 = max))
   ) |>
   pivot_longer(everything(),
                names_to = c("変数", "統計量"), names_sep = "_") |>
   pivot_wider(names_from = 統計量, values_from = value) |>
-  mutate(変数 = recode(変数, age = "年齢", educ = "教育年数", turnout = "投票率")) |>
-  flextable() |>
-  colformat_double(digits = 2) |>
-  set_table_properties(layout = "autofit", width = 1)
+  mutate(変数 = recode(変数,
+                       age = "年齢", educ = "教育年数", turnout = "投票率")) |>
+  knitr::kable(digits = 2, align = "lrrrr")
 ```
 
-@tbl-check に罫線が入り、「表 1」という日本語のキャプションが付いていますか。
+@tbl-check に上下の太い罫線と見出し行の下罫線が入り、
+「表 1」という日本語のキャプションが付いていますか。
 
 # グラフの確認
 
@@ -90,8 +88,9 @@ ggplot(df, aes(x = age, y = turnout)) +
 
 以下がすべて確認できたら、この Word ファイルを提出してください。
 
-1. 上の「日本語フォント」が **あり** になっている
-2. 見出しがゴシック体で表示されている
-3. コードブロックが枠付き・灰色背景になっている
-4. 表に罫線があり、キャプションが「表 1」と日本語で出ている
-5. グラフの日本語が四角になっていない
+1. Word を開くときに **破損の警告が出ない**
+2. 上の「日本語フォント」が **あり** になっている
+3. 見出しがゴシック体で表示されている
+4. コードブロックが枠付き・灰色背景になっている
+5. 表に罫線があり、キャプションが「表 1」と日本語で出ている
+6. グラフの日本語が四角になっていない
