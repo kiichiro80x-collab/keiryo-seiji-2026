@@ -1,0 +1,91 @@
+---
+title: "計量政治学 実習レポート"
+subtitle: "第1日 記述統計と回帰分析"
+author: "学籍番号 ○○○○○○○○　氏名"
+date: today
+date-format: "YYYY年M月D日"
+format:
+  docx:
+    ## ★ Windows の人はこのまま。Mac の人は reference-mac.docx に書き換える
+    reference-doc: reference-win.docx
+    number-sections: true
+    fig-align: center
+    tbl-cap-location: top
+    fig-cap-location: bottom
+    toc: false
+language:
+  crossref-fig-title: "図"
+  crossref-tbl-title: "表"
+  crossref-eq-prefix: "式"
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: "ragg_png"
+    dpi: 300
+    fig-width: 6      # 本文幅(約6.1インチ)に合わせる。これで拡大縮小が起きない
+    fig-height: 3.7
+    out-width: "100%"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("setup.R")
+```
+
+# はじめに
+
+ここに問題設定とリサーチクエスチョンを書きます。
+
+# データと記述統計
+
+```{r}
+#| label: tbl-desc
+#| tbl-cap: "記述統計量"
+
+df <- readr::read_csv("data/sample.csv", show_col_types = FALSE)
+
+modelsummary::datasummary_skim(df, output = "flextable")
+```
+
+@tbl-desc に示したとおり……
+
+# 可視化
+
+```{r}
+#| label: fig-main
+#| fig-cap: "年齢と投票率の関係"
+
+ggplot(df, aes(x = age, y = turnout)) +
+  geom_point(alpha = .5) +
+  geom_smooth(method = "lm", formula = y ~ x) +
+  labs(x = "年齢", y = "投票率 (%)")
+```
+
+@fig-main から……
+
+# 回帰分析
+
+```{r}
+#| label: tbl-reg
+#| tbl-cap: "推定結果"
+
+m1 <- lm(turnout ~ age, data = df)
+m2 <- lm(turnout ~ age + educ, data = df)
+
+modelsummary::modelsummary(
+  list("モデル1" = m1, "モデル2" = m2),
+  output   = "flextable",
+  stars    = TRUE,
+  gof_omit = "AIC|BIC|Log.Lik|RMSE|F"
+)
+```
+
+@tbl-reg より……
+
+# おわりに
+
+考察と今後の課題を書きます。

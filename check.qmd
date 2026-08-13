@@ -1,0 +1,97 @@
+---
+title: "動作確認"
+author: "学籍番号 ○○○○○○○○　氏名"
+date: today
+date-format: "YYYY年M月D日"
+format:
+  docx:
+    reference-doc: reference-win.docx
+execute:
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: "ragg_png"
+    dpi: 200
+    fig-width: 5.5
+    fig-height: 3.2
+    out-width: "90%"
+---
+
+このファイルが Word 形式で出力され、以下がすべて正しく表示されていれば準備完了です。
+提出前に、日本語が文字化けしていないか目で確認してください。
+
+# 環境の確認
+
+```{r}
+#| label: env
+#| echo: false
+
+cat("R        :", R.version.string, "\n")
+cat("Quarto   :", as.character(quarto::quarto_version()), "\n")
+cat("OS       :", R.version$platform, "\n")
+
+jp <- subset(systemfonts::system_fonts(), grepl("CJK", family))
+cat("日本語フォント:", if (nrow(jp) > 0) "あり" else "なし ← 要対応", "\n")
+```
+
+# 日本語テキストの確認
+
+本文がゴシック体ではなく明朝体で、読める大きさで表示されていますか。
+本文中の `mean(df$age)` のようなインラインコードは等幅フォントになりますか。
+
+> 引用ブロックです。左に縦線が入っていれば正常です。
+
+# 表の確認
+
+```{r}
+#| label: tbl-check
+#| tbl-cap: "記述統計量"
+
+library(tidyverse)
+library(flextable)
+
+df <- readr::read_csv("data/sample.csv", show_col_types = FALSE)
+
+df |>
+  summarise(
+    across(c(age, educ, turnout),
+           list(平均 = mean, 標準偏差 = sd, 最小 = min, 最大 = max))
+  ) |>
+  pivot_longer(everything(),
+               names_to = c("変数", "統計量"), names_sep = "_") |>
+  pivot_wider(names_from = 統計量, values_from = value) |>
+  mutate(変数 = recode(変数, age = "年齢", educ = "教育年数", turnout = "投票率")) |>
+  flextable() |>
+  colformat_double(digits = 2) |>
+  set_table_properties(layout = "autofit", width = 1)
+```
+
+@tbl-check に罫線が入り、「表 1」という日本語のキャプションが付いていますか。
+
+# グラフの確認
+
+```{r}
+#| label: fig-check
+#| fig-cap: "年齢と投票率の関係"
+
+theme_set(theme_bw(base_family = "Noto Sans CJK JP", base_size = 11))
+
+ggplot(df, aes(x = age, y = turnout)) +
+  geom_point(alpha = .4) +
+  geom_smooth(method = "lm", formula = y ~ x) +
+  labs(x = "年齢", y = "投票率 (%)", title = "日本語表示テスト")
+```
+
+@fig-check の軸ラベルとタイトルの日本語が、四角（□□□）になっていませんか。
+グラフが本文幅に収まり、中央に配置されていますか。
+
+# チェックリスト
+
+以下がすべて確認できたら、この Word ファイルを提出してください。
+
+1. 上の「日本語フォント」が **あり** になっている
+2. 見出しがゴシック体で表示されている
+3. コードブロックが枠付き・灰色背景になっている
+4. 表に罫線があり、キャプションが「表 1」と日本語で出ている
+5. グラフの日本語が四角になっていない

@@ -1,0 +1,15 @@
+channels:
+  - conda-forge
+dependencies:
+  - r-base=4.3
+  - r-knitr
+  - r-rmarkdown
+  - r-tidyverse
+  - r-modelsummary
+  - r-flextable
+  - r-broom
+  - r-ragg
+  - r-systemfonts
+  - r-janitor
+  - r-here
+  - quarto
