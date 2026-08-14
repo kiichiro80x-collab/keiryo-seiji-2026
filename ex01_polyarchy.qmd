@@ -1,0 +1,186 @@
+---
+title: "演習1 民主主義指標の分布を記述する"
+subtitle: "QoGデータ／V-Dem polyarchy 指標"
+author: "学籍番号 氏名"
+date: today
+date-format: "YYYY年M月D日"
+format:
+  docx:
+    ## ★ Windows の人はこのまま。Mac の人は reference-mac.docx に書き換える
+    reference-doc: reference-win.docx
+    number-sections: true
+    fig-align: center
+    tbl-cap-location: top
+    fig-cap-location: bottom
+language:
+  crossref-fig-title: "図"
+  crossref-tbl-title: "表"
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: "ragg_png"
+    dpi: 300
+    fig-width: 6
+    fig-height: 3.7
+    out-width: "100%"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("setup.R")
+```
+
+# 課題の設定
+
+本演習では、V-Dem プロジェクトの **polyarchy（選挙民主主義）指標** を用いて、
+世界各国の民主主義の水準が時代とともにどう変化したかを記述する。
+
+polyarchy 指標は 0 から 1 の連続値をとり、値が大きいほど選挙民主主義の水準が高い。
+ここでは 1960年・1980年・2000年・2020年、および利用可能な最新年の 5 時点を比較する。
+
+# データの読み込み
+
+QoG Basic Dataset（時系列版）から、必要な変数だけを抜き出したファイルを使う。
+
+
+```{r}
+qog <- readr::read_csv("data/qog_bas_ts_jan26.csv", show_col_types = FALSE)
+
+dim(qog)
+names(qog)
+```
+
+変数の意味は次のとおりである。
+
+- `cname`：国名
+- `ccodealp`：ISO 3文字国コード
+- `year`：年
+- `vdem_polyarchy`：polyarchy 指標（0〜1）
+- `ht_region`：地域区分
+
+## 対象年の設定
+
+最新年は年によって変わるため、データから自動的に取得する。
+
+```{r}
+#| label: years
+
+## polyarchy に値が入っている最後の年
+latest_year <- max(qog$year[!is.na(qog$vdem_polyarchy)])
+latest_year
+
+## 比較する5時点
+target_years <- sort(unique(c(1960, 1980, 2000, 2020, latest_year)))
+target_years
+```
+
+```{r}
+#| label: subset
+
+df <- qog |>
+  filter(year %in% target_years, !is.na(vdem_polyarchy)) |>
+  mutate(year_f = factor(year, levels = target_years))
+
+nrow(df)
+```
+
+このデータでは、最新年は `r latest_year` 年である。
+
+# 基本統計量
+
+```{r}
+#| label: tbl-desc
+#| tbl-cap: "polyarchy 指標の基本統計量"
+
+tab <- df |>
+  group_by(year) |>
+  summarise(
+    国数     = n(),
+    平均     = mean(vdem_polyarchy),
+    中央値   = median(vdem_polyarchy),
+    標準偏差 = sd(vdem_polyarchy),
+    最小値   = min(vdem_polyarchy),
+    最大値   = max(vdem_polyarchy),
+    .groups  = "drop"
+  )
+
+knitr::kable(
+  tab,
+  digits    = 3,
+  align     = "rrrrrrr",
+  col.names = c("年", "国数", "平均", "中央値", "標準偏差", "最小値", "最大値")
+)
+```
+
+@tbl-desc について、気づいたことを書くこと。
+
+
+# ヒストグラム
+
+分布の形を見る。
+
+```{r}
+#| label: fig-hist
+#| fig-cap: "polyarchy 指標の分布（年別）"
+#| fig-width: 6.2
+#| fig-height: 4.4
+
+ggplot(df, aes(x = vdem_polyarchy)) +
+  geom_histogram(binwidth = 0.05, boundary = 0,
+                 fill = "#3C6E9F", colour = "white", linewidth = 0.2) +
+  facet_wrap(~ year_f, ncol = 3) +
+  labs(x = "polyarchy 指標", y = "国数")
+```
+
+@fig-hist から、分布の形（山が1つか2つか、左右に偏っているか）を読み取ること。
+
+# 箱ひげ図とヴァイオリンプロット
+
+ヒストグラムを年ごとに並べる代わりに、1枚の図に重ねて比較する。
+
+```{r}
+#| label: fig-violin
+#| fig-cap: "polyarchy 指標の分布の比較"
+#| fig-width: 6.2
+#| fig-height: 3.9
+
+ggplot(df, aes(x = year_f, y = vdem_polyarchy)) +
+  geom_violin(fill = "#A8C6E0", colour = "grey45", alpha = 0.8, trim = TRUE) +
+  geom_boxplot(width = 0.16, fill = "white", colour = "grey25",
+               outlier.size = 0.8) +
+  stat_summary(fun = mean, geom = "point",
+               shape = 23, size = 2.4, fill = "#CC0000", colour = "#CC0000") +
+  labs(x = "年", y = "polyarchy 指標")
+```
+
+@fig-violin の見方は次のとおりである。
+
+- **ヴァイオリンの太さ**：その値の付近に国がどれだけ集まっているか
+- **箱**：下から第1四分位数・中央値・第3四分位数
+- **ひげ**：おおむねデータの範囲
+- **赤い菱形**：平均値
+
+平均（赤い菱形）と中央値（箱の中の線）がずれている年は、分布が左右に偏っている。
+
+# 考察
+
+以下の3点について、表と図を根拠にして述べること。
+
+1. 平均値と中央値のずれは、どの年で大きいか。それは分布のどのような形を意味するか。
+2. 標準偏差は時代とともにどう変化したか。国家間の差は広がったのか、縮まったのか。
+3. 「世界は民主化した」と言えるか。言えるとすれば、どの統計量が根拠になるか。
+   また、この結論に対してどのような留保が必要か。
+
+
+# 出典
+
+- Dahlberg, Stefan, Aksel Sundström, Sören Holmberg, Bo Rothstein,
+  Natalia Alvarado Pachon, Victor Saidi Phiri & Zhen Liu. 2026.
+  *The Quality of Government Basic Dataset, version Jan26*.
+  University of Gothenburg: The Quality of Government Institute.
+  <https://doi.org/10.18157/qogbasjan26>
+- polyarchy 指標の原典は V-Dem（Varieties of Democracy）プロジェクト
