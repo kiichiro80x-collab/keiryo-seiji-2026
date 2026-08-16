@@ -1,0 +1,401 @@
+---
+title: "演習7　量的テキスト分析"
+subtitle: "quanteda による政党マニフェストの分析"
+author: "学籍番号 ○○○○○○○○　氏名"
+date: today
+date-format: "YYYY年M月D日"
+format:
+  docx:
+    ## ★ Windows の人はこのまま。Mac の人は reference-mac.docx に書き換える
+    reference-doc: reference-win.docx
+    number-sections: true
+    fig-align: center
+    tbl-cap-location: top
+    fig-cap-location: bottom
+language:
+  crossref-fig-title: "図"
+  crossref-tbl-title: "表"
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: "ragg_png"
+    dpi: 300
+    fig-width: 6
+    fig-height: 4.2
+    out-width: "100%"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("setup.R")
+```
+
+# この演習の目標
+
+これまでの演習では、**数値になったデータ**を扱ってきた。
+しかし政治学が扱う資料の多くは、演説・議事録・新聞記事・SNS投稿といった
+**文章**である。
+
+量的テキスト分析（Quantitative Text Analysis）は、
+そうした文章を数値に変換して分析する手法である。
+
+::: {.callout-note title="この演習の位置づけ"}
+これは**先端研究の紹介**である。
+今日ですべてを使いこなせるようになる必要はない。
+
+「こういう分析ができるのか」と知っておけば、
+自分の研究テーマで使えそうだと思ったときに、そこから学び始められる。
+それがこの回の目的である。
+:::
+
+## 何ができるのか
+
+- どの政党がどんな言葉を多く使っているかを比べる
+- 文章の中に潜む「話題」を機械的に取り出す（トピックモデル）
+- 言葉の使い方から、政党の**イデオロギー的な位置**を推定する
+- 文書どうしの**似ている度合い**を測る
+
+## 使うデータ
+
+2019年参院選における、5政党のマニフェスト（政策集）である。
+
+# 準備
+
+::: {.callout-important title="事前にインストールしておくこと"}
+Console で次を実行すること。**10分以上かかる場合がある**。
+
+```
+install.packages(c("quanteda", "quanteda.textmodels",
+                   "quanteda.textstats", "quanteda.textplots",
+                   "topicmodels", "RColorBrewer"))
+```
+:::
+
+```{r}
+#| label: check-pkg
+
+need <- c("quanteda", "quanteda.textmodels", "quanteda.textstats",
+          "quanteda.textplots", "topicmodels", "RColorBrewer")
+miss <- need[!vapply(need, requireNamespace, logical(1), quietly = TRUE)]
+if (length(miss) > 0) {
+  stop("次のパッケージが足りません:\n  ",
+       paste(miss, collapse = ", "), call. = FALSE)
+}
+
+library(quanteda)
+library(quanteda.textmodels)
+library(quanteda.textstats)
+library(quanteda.textplots)
+library(topicmodels)
+```
+
+# データの確認
+
+```{r}
+#| label: load
+
+# テキストデータは必ず UTF-8 で用意する。でないと文字化けする
+mani <- read_csv("data/manifesto.csv", show_col_types = FALSE)
+
+dim(mani)
+mani$party
+```
+
+## 分量の偏りを確認する
+
+分析の前に、**各政党の文章がどれくらいの長さか**を必ず見ておく。
+
+```{r}
+#| label: tbl-length
+#| tbl-cap: "政党別の文字数"
+
+mani |>
+  mutate(chars = nchar(policy)) |>
+  select(party, chars) |>
+  arrange(desc(chars)) |>
+  kable(col.names = c("政党", "文字数"))
+```
+
+
+{{< pagebreak >}}
+
+# 前処理
+
+テキスト分析では、文章を段階的に数値へ変換していく。
+
+| 段階 | 内容 | 関数 |
+|:--|:--|:--|
+| ① コーパス | 文書の集まりとして認識させる | `corpus()` |
+| ② トークン | 文章を単語に分解する | `tokens()` |
+| ③ 文書行列 | 「文書×単語」の表にする | `dfm()` |
+
+: 前処理の3段階
+
+## コーパスの作成
+
+```{r}
+#| label: corpus
+
+# docid_field で文書名（今回は政党名）
+# text_field でテキストが入っている列名
+co_mani <- corpus(mani, docid_field = "party", text_field = "policy")
+
+summary(co_mani)
+```
+
+`Types` は異なり語数、`Tokens` は延べ語数、`Sentences` は文の数である。
+
+## トークン化
+
+```{r}
+#| label: tokens
+
+# tokens() で文章を単語に分解する
+to_mani <- tokens(co_mani)
+
+# 最初の文書の、最初の20語を見てみる
+head(to_mani[[1]], 20)
+```
+
+::: {.callout-note title="日本語の分かち書きについて"}
+英語と違い、日本語は単語が空白で区切られていない。
+
+`quanteda` は国際的な文字処理の仕組み（ICU）を使って自動的に区切るため、
+特別な準備なしに日本語を扱える。
+
+ただし、本格的な研究では **MeCab** などの形態素解析器を使い、
+品詞情報も取り出すのが一般的である。
+:::
+
+## 文書行列（dfm）の作成
+
+```{r}
+#| label: dfm
+
+d_mani <- dfm(to_mani)
+
+# 意味を持ちにくい語を取り除く
+d_mani <- d_mani |>
+  # ひらがなだけの語（「する」「ある」など）と1文字の語を削除
+  # valuetype = "regex" は正規表現を使うという指定
+  dfm_remove(pattern = "^[ぁ-ん]+$", valuetype = "regex", min_nchar = 2) |>
+  # 出現回数が10回未満の語を削除
+  dfm_trim(min_termfreq = 10)
+
+# 何文書 × 何語の行列になったか
+dim(d_mani)
+```
+
+{{< pagebreak >}}
+
+# 出現頻度の分析
+
+## よく使われている語
+
+```{r}
+#| label: topfeat
+
+# topfeatures() で出現回数の多い語を取り出す
+topfeatures(d_mani, 40)
+```
+
+## ワードクラウド
+
+```{r}
+#| label: fig-wc
+#| fig-cap: "全体のワードクラウド（50回以上出現した語）"
+#| fig-height: 4.6
+
+# font に日本語フォントを指定しないと文字化けする
+textplot_wordcloud(d_mani, min_count = 50,
+                   color = RColorBrewer::brewer.pal(5, "Dark2"),
+                   font = JP_FIG)
+```
+
+```{r}
+#| label: fig-wc-party
+#| fig-cap: "政党別のワードクラウド"
+#| fig-height: 5.0
+
+# comparison = TRUE で、政党ごとに特徴的な語を色分けして表示する
+textplot_wordcloud(d_mani, comparison = TRUE, min_count = 50,
+                   color = RColorBrewer::brewer.pal(5, "Dark2"),
+                   font = JP_FIG)
+```
+
+@fig-wc-party は、**その政党が相対的に多く使っている語**を示している。
+@fig-wc（全体）とは意味が違う点に注意すること。
+
+{{< pagebreak >}}
+
+# 共起ネットワーク
+
+どの語とどの語が一緒に出てくるかを図にする。
+
+```{r}
+#| label: fig-network
+#| fig-cap: "共起ネットワーク（頻出60語）"
+#| fig-height: 5.2
+
+# fcm() で共起行列（feature co-occurrence matrix）を作る
+col_mani <- fcm(d_mani, context = "document", window = 5)
+
+# 出現頻度の高い上位60語だけを取り出す
+hi_mani <- names(topfeatures(d_mani, 60))
+col_mani <- fcm_select(col_mani, hi_mani)
+
+textplot_network(col_mani, min_freq = 0.9, edge_size = 2,
+                 vertex_size = 0.01 * rowSums(col_mani) / min(rowSums(col_mani)),
+                 vertex_labelfont = JP_FIG)
+```
+
+線が太いほど、その2語が一緒に出てくる回数が多い。
+円が大きいほど、その語の出現回数が多い。
+
+# トピックモデル
+
+語の出現パターンから、文章に含まれる「**話題**」を機械的に取り出す。
+
+```{r}
+#| label: topic
+
+# LDA（Latent Dirichlet Allocation）
+# 「文書は複数の話題の混合であり、話題ごとに使われやすい語がある」と仮定する
+# convert() で quanteda の行列を topicmodels 用に変換する
+# k = 5 でトピック数を5に指定
+set.seed(2026)
+topic_mani <- LDA(convert(d_mani, to = "topicmodels"), k = 5)
+```
+
+```{r}
+#| label: tbl-topic
+#| tbl-cap: "各トピックの頻出語（上位10語）"
+
+# get_terms() で各トピックの代表的な語を取り出す
+get_terms(topic_mani, 10) |> kable()
+```
+
+@tbl-topic の各列が1つのトピックである。
+**トピックに名前をつけるのは分析者の仕事**であり、
+語のまとまりを見て「これは外交・安全保障の話題だ」などと解釈する。
+
+::: {.callout-note title="トピック数はどう決めるか"}
+`k = 5` という数は分析者が決めたものである。
+統計的な指標（perplexity など）で選ぶ方法もあるが、
+最終的には「解釈できるかどうか」で判断することが多い。
+:::
+
+{{< pagebreak >}}
+
+# 政党の位置を推定する
+
+## Wordfish モデル
+
+使われている語の頻度だけから、文書を**1次元の軸**の上に配置する手法である。
+
+```{r}
+#| label: wordfish
+
+# dir = c(左に置きたい文書, 右に置きたい文書)
+# 文書の順番は 1=自民党, 2=公明党, 3=共産党, 4=日本維新, 5=立憲民主
+# 共産党を左、自民党を右に固定して軸の向きを決める
+wf_mani <- textmodel_wordfish(d_mani, dir = c(3, 1))
+
+summary(wf_mani)
+```
+
+::: {.callout-important title="軸の向きは分析者が決める"}
+Wordfish は語の出現頻度だけで軸を作るため、
+**その軸が「左右」を意味するかどうかは、モデル自身は知らない**。
+
+`dir` で向きを固定しなければ、軸は反転しうる。
+「左右のイデオロギー軸が出た」と言えるかどうかは、
+結果を見て分析者が判断することになる。
+:::
+
+```{r}
+#| label: fig-scale
+#| fig-cap: "推定された政党の位置"
+#| fig-height: 3.2
+
+# theta が各文書（政党）の推定位置
+textplot_scale1d(wf_mani) +
+  theme_gray(base_family = JP_FIG)
+```
+
+## 語の位置
+
+```{r}
+#| label: fig-features
+#| fig-cap: "各語の位置と出現頻度"
+#| fig-height: 4.4
+
+# margin = "features" で語を軸上に配置する
+# highlighted で強調したい語を指定できる
+textplot_scale1d(wf_mani, margin = "features",
+                 highlighted = c("伝統", "推進", "平等", "格差",
+                                 "憲法", "バリアフリー")) +
+  theme_gray(base_family = JP_FIG)
+```
+
+@fig-features の見方は次のとおりである。
+
+- **横軸（beta）**：その語が軸のどちら寄りかを表す
+- **縦軸（psi）**：その語の固定効果。**どの文書にも多く出てくる語ほど高い**
+- psi が高い語は、文書の区別には役立たない（「推進」「実現」など）
+- psi が低く beta が両端にある語が、**軸を作っている語**である
+
+{{< pagebreak >}}
+
+# 文書どうしの類似度
+
+```{r}
+#| label: tbl-cosine
+#| tbl-cap: "コサイン類似度"
+
+# コサイン類似度：語の使い方がどれくらい似ているかを 0〜1 で測る
+# margin = "documents" で文書どうしを比べる
+cosine_sim <- textstat_simil(d_mani, method = "cosine", margin = "documents")
+
+as.matrix(cosine_sim) |> kable(digits = 3)
+```
+
+1に近いほど、語の使い方が似ていることを意味する。
+@tbl-cosine で、どの政党どうしが似ているかを確認すること。
+
+# 考察
+
+以下について、表と図を根拠に述べること。
+
+1. @fig-wc-party を見て、各政党が相対的に多く使っている語は何か。
+   政党の主張との対応はつくか。
+2. @tbl-topic の5つのトピックに、それぞれ名前をつけるとしたら何がよいか。
+3. @fig-scale で推定された政党の位置は、
+   一般に言われる「左右」のイメージと一致するか。
+4. Wordfish の軸は本当に「イデオロギー」を測っているといえるか。
+   そう言うために、ほかに何を確かめる必要があるか。
+
+
+# もっと学びたい人へ
+
+| やりたいこと | 手がかり |
+|:--|:--|
+| 形態素解析をきちんと行う | `RMeCab`、`gibasa` パッケージ |
+| 感情分析（ポジ・ネガ判定） | `quanteda.sentiment`、日本語極性辞書 |
+| 単語をベクトルにする | `word2vec`、`text2vec` |
+| 大規模言語モデルを使う | `text` パッケージ、Hugging Face |
+| 教科書 | Watanabe & Baturo（2023）ほか、quanteda 公式サイト |
+
+: さらに進むための手がかり
+
+quanteda の公式サイト（<https://quanteda.io/>）には、
+豊富なチュートリアルが用意されている。日本語の解説も多い。
+
+# 出典
+
+各政党の2019年参院選マニフェスト（政策集）。
+分析用に整形したデータを使用している。

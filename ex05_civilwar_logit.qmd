@@ -1,0 +1,585 @@
+---
+title: "演習5　どのような国で内戦が起きるのか"
+subtitle: "QoG／UCDP・PRIO データによるロジスティック回帰"
+author: "学籍番号 ○○○○○○○○　氏名"
+date: today
+date-format: "YYYY年M月D日"
+format:
+  docx:
+    ## ★ Windows の人はこのまま。Mac の人は reference-mac.docx に書き換える
+    reference-doc: reference-win.docx
+    number-sections: true
+    fig-align: center
+    tbl-cap-location: top
+    fig-cap-location: bottom
+language:
+  crossref-fig-title: "図"
+  crossref-tbl-title: "表"
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: "ragg_png"
+    dpi: 300
+    fig-width: 6
+    fig-height: 3.7
+    out-width: "100%"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("setup.R")
+```
+
+# この演習の目標
+
+演習4では、0から10の**連続した数値**を説明した。
+今回の従属変数は「内戦が起きているか、いないか」という **0 か 1** である。
+
+- 二値の従属変数を扱うロジスティック回帰を実行できるようになる
+- **分析の前に変数の中身を確かめる**習慣を身につける
+- 係数を「予測確率」に直して解釈する
+
+## 問い
+
+> **どのような国で内戦が起きやすいのか。**
+
+貧しい国ほど内戦が起きやすい、という見方がある。
+一方で、民主的でない国ほど不安定だ、という見方もある。
+データで確かめてみる。
+
+::: {.callout-note title="初回のみ必要な準備"}
+Console で次の1行を実行すること（数分かかる）。
+
+`source("get_qog_std.R")`
+:::
+
+# データの読み込み
+
+```{r}
+#| label: load
+
+if (!file.exists("data/qog_conflict.csv")) {
+  stop("data/qog_conflict.csv がありません。先に source(\"get_qog_std.R\") を実行してください。")
+}
+
+qog <- read_csv("data/qog_conflict.csv", show_col_types = FALSE)
+
+dim(qog)
+names(qog)
+```
+
+{{< pagebreak >}}
+
+# 変数の中身を確かめる
+
+`ucdp_type3` は「内戦」という名前がついている。
+分析にかける前に、**自分の知っている国**で値を確かめる。
+
+```{r}
+#| label: check-vars
+
+qog |>
+  filter(year == 2015,
+         cname %in% c("Japan", "Sweden", "Canada", "Colombia", "Syria")) |>
+  select(cname, ucdp_type2, ucdp_type3, ucdp_type4) |>
+  kable(col.names = c("国名", "国家間戦争", "内戦", "国際化した内戦"))
+```
+
+`ucdp_type3` は「その年に**いくつの**内戦を抱えていたか」という件数である。
+コロンビアが 2 になっているのは、2つの紛争が並行していたことを意味する。
+
+**② カナダやスウェーデンの「国際化した内戦」に注意**
+
+両国で内戦は起きていない。この数字は、
+**その国が国外の紛争に参加した件数**である。
+
+**③ 日本はすべて欠損（NA）である**
+
+```{r}
+#| label: check-na
+
+qog |>
+  filter(year == 2015) |>
+  count(ucdp_type3) |>
+  kable(col.names = c("ucdp_type3 の値", "国数"))
+```
+
+`NA` が多数を占めている。これは「データがない」のではなく、
+**その年、紛争にまったく関与しなかった国**である。
+
+したがって、`NA` を除いてしまうと、
+**分析対象が「紛争に関わった国」だけに絞られてしまう**。
+これは分析結果を大きく歪める。
+
+::: {.callout-important title="この演習で最も重要な教訓"}
+変数名を信用せず、**自分の知っている国で値を確かめる**こと。
+
+`filter(!is.na(...))` を機械的に書くと、
+知らないうちに分析対象が偏ることがある。
+欠損が何を意味するのかを、必ず考えること。
+:::
+
+{{< pagebreak >}}
+
+# データの準備
+
+## 内戦ダミーの作成
+
+```{r}
+#| label: prep
+
+dat <- qog |>
+  mutate(
+    # NA（紛争に関与せず）と 0 はどちらも「内戦なし」
+    # 1件以上あれば「内戦あり」とする
+    civilwar = if_else(is.na(ucdp_type3) | ucdp_type3 == 0, 0, 1),
+
+    # 一人当たりGDPと人口は、対数に変換して使う（理由は後述）
+    log_gdppc = log(wdi_gdpcapcon2015),
+    log_pop   = log(wdi_pop)
+  )
+```
+
+## 対数変換について
+
+一人当たりGDPをそのまま使うと、次の2つが同じ「1ドルの差」になる。
+
+- 500ドルの国と 501ドルの国
+- 50,000ドルの国と 50,001ドルの国
+
+しかし、前者と後者では意味がまったく違う。
+**対数に変換すると「何倍か」という比率で効果を測れる**ようになる。
+人口も同じ理由で対数にする。
+
+## 分析対象の時点
+
+内戦は稀な事象なので、1年だけでは件数が足りない。
+**10年おきに4時点**を取り出してまとめて分析する。
+
+```{r}
+#| label: subset
+
+dat_reg <- dat |>
+  filter(year %in% c(1995, 2005, 2015, 2020)) |>
+  select(cname, year, civilwar, log_gdppc, log_pop,
+         vdem_polyarchy, ef_ef, ht_region) |>
+  drop_na()
+
+nrow(dat_reg)
+```
+
+```{r}
+#| label: tbl-crosstab
+#| tbl-cap: "年ごとの内戦の有無"
+
+table(dat_reg$year, dat_reg$civilwar) |>
+  kable(col.names = c("年", "内戦なし", "内戦あり"))
+```
+
+@tbl-crosstab のとおり、内戦が起きているのは全体の 14％ 程度である。
+
+{{< pagebreak >}}
+
+# まず図で確かめる
+
+回帰の前に、内戦の有無で説明変数がどう違うかを見ておく。
+
+```{r}
+#| label: fig-box
+#| fig-cap: "内戦の有無と一人当たりGDP・人口・民主主義度"
+#| fig-height: 3.2
+
+dat_reg |>
+  mutate(cw = if_else(civilwar == 1, "内戦あり", "内戦なし")) |>
+  # 3つの変数を縦に積み直して、まとめて描く
+  select(cw, log_gdppc, log_pop, vdem_polyarchy) |>
+  pivot_longer(-cw, names_to = "var", values_to = "value") |>
+  # 表示名を日本語にする
+  mutate(var = case_when(
+    var == "log_gdppc"      ~ "一人当たりGDP（対数）",
+    var == "log_pop"        ~ "人口（対数）",
+    var == "vdem_polyarchy" ~ "民主主義度"
+  )) |>
+  ggplot(aes(x = cw, y = value)) +
+  geom_boxplot(fill = "#A8C6E0", colour = "grey35", outlier.size = 0.7) +
+  # scales = "free_y" で、変数ごとに縦軸の目盛を変える
+  facet_wrap(~ var, scales = "free_y") +
+  labs(x = NULL, y = NULL)
+```
+
+@fig-box から、内戦のある国とない国で、
+どの変数に大きな違いがあるかを読み取ること。
+
+{{< pagebreak >}}
+
+# ロジスティック回帰
+
+## なぜ普通の回帰ではだめなのか
+
+従属変数が 0 か 1 のとき、`lm()` を使うと次の問題が起きる。
+
+- 予測値が **0 より小さく、1 より大きく**なりうる（確率としてありえない）
+- 残差の分散が一定にならない
+
+そこで、**確率を 0 と 1 の間に収める変換**を使う。
+これがロジスティック回帰である。
+
+## 実行
+
+```{r}
+#| label: model
+
+# glm は generalized linear model（一般化線形モデル）の略
+# family = binomial を指定すると、ロジスティック回帰になる
+m1 <- glm(civilwar ~ log_gdppc + log_pop,
+          data = dat_reg, family = binomial)
+
+m2 <- glm(civilwar ~ log_gdppc + log_pop + vdem_polyarchy + ef_ef,
+          data = dat_reg, family = binomial)
+
+summary(m2)
+```
+
+`lm()` との違いは、**`glm()` にして `family = binomial` を足すだけ**である。
+
+## 結果の表
+
+```{r}
+#| label: labels
+
+LABELS <- c(
+  "log_gdppc"      = "一人当たりGDP（対数）",
+  "log_pop"        = "人口（対数）",
+  "vdem_polyarchy" = "民主主義度（0〜1）",
+  "ef_ef"          = "民族分断度（0〜1）"
+)
+```
+
+```{r}
+#| label: tbl-reg
+#| tbl-cap: "内戦の有無を説明するロジスティック回帰"
+
+tab <- modelsummary(
+  list("モデル1" = m1, "モデル2" = m2),
+  output   = "data.frame",
+  coef_map = LABELS,
+  stars    = TRUE,
+  gof_map  = c("nobs", "aic")
+)
+
+tab |>
+  mutate(term = if_else(!is.na(statistic) & statistic == "std.error",
+                        "", term)) |>
+  select(-part, -statistic) |>
+  kable(align = "lrr", col.names = c("", "モデル1", "モデル2"))
+```
+
+{{< pagebreak >}}
+
+# 係数をどう読むか
+
+ロジスティック回帰の係数は「対数オッズ」の変化量であり、
+**そのままでは解釈しづらいことがある**。
+
+## 方法1：オッズ比に直す
+
+係数を `exp()` すると**オッズ比**になる。
+「1倍なら効果なし、1より小さければ起きにくくなる」と読める。
+
+```{r}
+#| label: tbl-or
+#| tbl-cap: "オッズ比（係数を exp で変換したもの）"
+
+# exp(coef(モデル)) でオッズ比が得られる
+tibble(
+  term = names(coef(m2)),
+  or   = exp(coef(m2))
+) |>
+  filter(term %in% names(LABELS)) |>
+  mutate(term = LABELS[term]) |>
+  kable(digits = 3, col.names = c("変数", "オッズ比"))
+```
+
+一人当たりGDPのオッズ比が 0.5 なら、
+「GDPが e 倍（約2.7倍）になると、内戦のオッズが半分になる」と読む。
+
+## 方法2：予測確率で示す（おすすめ）
+
+いちばん直感的なのは、**他の変数を平均に固定して、
+関心のある変数だけを動かしたときの確率**を計算することである。
+
+```{r}
+#| label: newdata
+
+# 予測に使う仮想的なデータを作る
+# 一人当たりGDPだけを動かし、他は平均値で固定する
+newdata <- tibble(
+  log_gdppc      = seq(min(dat_reg$log_gdppc), max(dat_reg$log_gdppc),
+                       length.out = 100),
+  log_pop        = mean(dat_reg$log_pop),
+  vdem_polyarchy = mean(dat_reg$vdem_polyarchy),
+  ef_ef          = mean(dat_reg$ef_ef)
+)
+```
+
+
+## パッケージを使うと信頼区間も簡単に出せる
+
+演習4でインストールした `sjPlot` を使うと、同じ図が1行で描ける。
+
+```{r}
+#| label: sjplot-pred
+#| eval: false
+#| fig-height: 3.2
+
+library(sjPlot)
+
+# type = "pred" で予測確率、terms = で動かす変数を指定する
+# 信頼区間は自動でつく
+plot_model(m2, type = "pred", terms = "log_gdppc [all]")
+```
+
+インストールしてある人は、`#| eval: false` の行を削除して実行し、
+
+{{< pagebreak >}}
+
+# 発展1　交互作用項
+
+## 考え方
+
+ここまでのモデルは、「貧しいほど内戦が起きやすい」という効果が
+**どの国でも同じ大きさ**だと仮定していた。
+
+しかし、貧困の効果は国の性質によって違うかもしれない。
+たとえば、**民主的な国では、貧しくても紛争が政治過程で処理される**
+ため、貧困の効果が弱まる、という予想が立てられる。
+
+このように「**Aの効果がBによって変わる**」ことを調べるのが交互作用項である。
+
+> **仮説**：一人当たりGDPが低いほど内戦が起きやすいが、
+> その効果は民主主義の程度によって異なる。
+
+## 実行
+
+```{r}
+#| label: model-int
+
+# 変数を * でつなぐと、
+#   ① それぞれの効果（主効果）
+#   ② 2つの掛け算（交互作用項）
+# の3つが一度に入る
+m3 <- glm(civilwar ~ log_gdppc * vdem_polyarchy + log_pop + ef_ef,
+          data = dat_reg, family = binomial)
+
+summary(m3)
+```
+
+出力の `log_gdppc:vdem_polyarchy` が交互作用項である。
+`:` は「この2つの掛け算」という意味である。
+
+## 結果の読み方
+
+交互作用項が入ると、**主効果を単独で読んではいけなくなる**。
+
+`log_gdppc` の係数は「民主主義度が**0のとき**のGDPの効果」であり、
+民主主義度が0の国は現実にはほとんど存在しない。
+つまり、**表の数字だけを見ても意味がつかめない**。
+
+そこで、図で確かめる。
+
+
+## 交互作用のビジュアライズ
+
+```{r}
+#| label: sjplot-int
+#| eval: false
+#| fig-height: 3.4
+
+library(sjPlot)
+
+# terms の2つ目に「水準を固定する変数」を書く
+plot_model(m3, type = "pred",
+           terms = c("log_gdppc", "vdem_polyarchy [0.2, 0.5, 0.8]"))
+```
+
+::: {.callout-important title="ロジスティック回帰では線が平行にならない"}
+交互作用項を入れなくても、確率の目盛では線は平行にならない。
+確率は 0 と 1 の間に押し込められるため、
+もともと確率の高い群では変化が緩やかになるからである。
+
+したがって「**図で線が開いている＝交互作用がある**」とは限らない。
+交互作用項の係数と信頼区間を、必ずあわせて確認すること。
+:::
+
+{{< pagebreak >}}
+
+# 発展2　マルチレベルモデル
+
+## なぜ必要か
+
+このデータには、次の構造がある。
+
+- 同じ**国**が4回（1995・2005・2015・2020年）登場する
+- 国は**地域**（アフリカ、東欧、西欧など）にまとまっている
+
+つまり観測は独立ではなく、**入れ子（ネスト）になっている**。
+
+ここまでのモデルは、590件すべてを独立な観測として扱ってきた。
+そのため、**標準誤差が本来より小さく出ている**可能性がある。
+
+マルチレベルモデルは、この構造を明示的にモデルに組み込む方法である。
+
+## 地域ごとの違いを見る
+
+```{r}
+#| label: tbl-region
+#| tbl-cap: "地域別にみた内戦の発生割合"
+
+dat_reg |>
+  group_by(ht_region) |>
+  summarise(
+    n    = n(),
+    rate = mean(civilwar),
+    .groups = "drop"
+  ) |>
+  arrange(desc(rate)) |>
+  kable(digits = 3, col.names = c("地域コード", "観測数", "内戦の割合"))
+```
+
+@tbl-region のとおり、地域によって内戦の起こりやすさは大きく違う。
+（地域コードの対応はコードブックで確認すること）
+
+## インストール
+
+```{r}
+#| label: install-lme4
+#| eval: false
+
+install.packages("lme4")
+```
+
+::: {.callout-note title="実行するときの注意"}
+- Console に直接入力すること
+- 数分かかる場合がある
+:::
+
+## 実行
+
+```{r}
+#| label: model-ml
+#| eval: false
+
+library(lme4)
+
+# (1 | グループ) で「グループごとに切片を変える」ことを指定する
+# glmer は glm のマルチレベル版
+m4 <- glmer(civilwar ~ log_gdppc + log_pop + vdem_polyarchy +
+              (1 | ht_region),
+            data = dat_reg, family = binomial)
+
+summary(m4)
+```
+
+## 何が変わるのか
+
+**固定効果として地域ダミーを入れる場合との違い**
+
+| | 地域ダミー（固定効果） | ランダム切片 |
+|:--|:--|:--|
+| 推定するもの | 地域ごとの係数（10個前後） | 切片の**ばらつき**（1個） |
+| 観測の少ない地域 | 不安定な推定値になる | 全体平均に引き寄せられる |
+| 考え方 | 地域は「これで全部」 | 地域は「取りうる地域の一部」 |
+
+観測の少ないグループの推定値が全体平均に引き寄せられる性質を
+**部分プーリング（縮小）**という。
+極端な値が出にくくなるのが利点である。
+
+**級内相関（ICC）**
+
+切片のばらつきが大きいほど、「同じ地域の国は似ている」ことになる。
+その度合いを表すのが級内相関である。
+
+```{r}
+#| label: icc
+#| eval: false
+
+# ランダム効果の分散を取り出す
+v <- as.numeric(VarCorr(m4)$ht_region)
+
+# ロジスティック回帰では、個体レベルの分散は π²/3 で固定されている
+icc <- v / (v + pi^2 / 3)
+icc
+```
+
+この値が 0.2 なら、「内戦の起こりやすさの違いのうち、
+約2割は地域の違いによる」と読める。
+
+## 地域ごとの切片を図で見る
+
+```{r}
+#| label: ranef-plot
+#| eval: false
+#| fig-height: 3.4
+
+library(sjPlot)
+
+# type = "re" でランダム効果（地域ごとの切片）を描く
+plot_model(m4, type = "re")
+```
+
+0より右にある地域は、**説明変数を統制してもなお内戦が多い**地域である。
+
+::: {.callout-important title="この分析の限界"}
+本来は「**国**ごとのランダム切片」を入れるべきである。
+同じ国が4回登場しているのだから、そこにこそ入れ子構造がある。
+
+しかし1国あたり4観測しかなく、大半の国は4回とも「内戦なし」である。
+このような場合、推定が不安定になる。
+
+より長い期間（たとえば1960年以降の全年）を使えば、
+国レベルのランダム切片を推定できる。
+関心があれば試してみること。
+:::
+
+{{< pagebreak >}}
+
+# 考察
+
+以下について、表と図を根拠に述べること。
+
+1. 一人当たりGDPと人口は、内戦の起こりやすさとどう関係していたか。
+   @tbl-pred の数値を使って、具体的に説明すること。
+2. 民主主義度の効果はどうだったか。
+   「独裁国家ほど内戦が起きやすい」という予想は支持されたか。
+3. @fig-pred が直線ではなく曲線になっているのはなぜか。
+4. 「貧しいから内戦が起きる」のか、「内戦が起きたから貧しい」のか。
+   このデータから、どちらかを判断できるか。
+5. `ucdp_type3` の欠損を 0 として扱った。
+   もし欠損を除いて分析していたら、結果はどう変わっていたと考えられるか。
+6. @fig-int で3本の線は平行だったか。
+   交互作用項の係数と信頼区間もあわせて、貧困の効果が
+   体制によって変わるといえるかを述べること。
+7. 地域ごとに内戦の起こりやすさが違うのはなぜだと考えられるか。
+   マルチレベルモデルを使う利点は何か。
+
+::: {.callout-important title="解釈するときの注意"}
+- 4時点をまとめて分析している。同じ国が何度も登場するため、
+  **標準誤差は本来より小さく出ている**可能性がある
+- 「内戦の発生」と「内戦の継続」を区別していない。
+  長く続く内戦を抱えた国が、何度も 1 として数えられている
+- 内戦の定義は「年間25人以上の戦闘関連死」である。
+  これに満たない暴力は 0 として扱われている
+- 統制できるのは、モデルに入れた変数だけである
+:::
+
+# 出典
+
+- Teorell, Jan, et al. *The Quality of Government Standard Dataset*,
+  version Jan26. University of Gothenburg:
+  The Quality of Government Institute.
+- 紛争データの原典は **UCDP/PRIO Armed Conflict Dataset**
+  （ウプサラ大学紛争データプログラム／オスロ国際平和研究所）。

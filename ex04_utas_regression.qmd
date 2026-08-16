@@ -1,0 +1,566 @@
+---
+title: "演習4　回帰分析"
+subtitle: "東大朝日調査／石破茂への好感度を説明する"
+author: "学籍番号 ○○○○○○○○　氏名"
+date: today
+date-format: "YYYY年M月D日"
+format:
+  docx:
+    ## ★ Windows の人はこのまま。Mac の人は reference-mac.docx に書き換える
+    reference-doc: reference-win.docx
+    number-sections: true
+    fig-align: center
+    tbl-cap-location: top
+    fig-cap-location: bottom
+language:
+  crossref-fig-title: "図"
+  crossref-tbl-title: "表"
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: "ragg_png"
+    dpi: 300
+    fig-width: 6
+    fig-height: 3.7
+    out-width: "100%"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("setup.R")
+```
+
+# この演習の目標
+
+演習3では、2つの集団を比べた。今回は**複数の要因を同時に考慮**して、
+ある変数が他の変数をどれだけ説明するかを調べる。
+
+- 因子変数（factor）への変換と、参照カテゴリの意味を理解する
+- 単回帰分析と重回帰分析を実行し、結果を読む
+- **統制することで係数がどう変わるか**を確かめる
+- Word で使える回帰分析表とキャタピラプロットを作る
+
+## 分析の枠組み
+
+**従属変数**（説明されるもの）
+
+- `Q42_5`：石破茂への好感度（0＝とても嫌い 〜 10＝とても好き）
+
+**説明変数**（説明するもの）
+
+| | 変数 | 内容 |
+|:--|:--|:--|
+| 単回帰 | `Q41` | 党派性（長い目で見て何党寄りか） |
+| 重回帰 | 上記に加えて | |
+| | `Q47` | 性別 |
+| | `Q48` | 世代（年齢層） |
+| | `Q50` | 結婚状況 |
+| | `Q51` | 最終学歴 |
+| | `Q54` | 生活水準 |
+
+: この演習で使う変数
+
+# データの準備
+
+## 読み込み
+
+```{r}
+#| label: load
+
+utas <- read_csv("data/2025UTASV20250812.csv", show_col_types = FALSE)
+```
+
+## 世代（年齢層）の扱い
+
+`Q48` は実年齢ではなく、**15段階の年齢層**である。
+
+| 値 | 年齢層 | | 値 | 年齢層 |
+|:--|:--|:--|:--|:--|
+| 1 | 18・19歳 | | 9 | 55〜59歳 |
+| 2 | 20〜24歳 | | 10 | 60〜64歳 |
+| 3 | 25〜29歳 | | 11 | 65〜69歳 |
+| … | … | | … | … |
+| 8 | 50〜54歳 | | 15 | 85歳以上 |
+
+: Q48 の区分（一部）
+
+この演習では、**値をそのまま「世代」という変数として使う**。
+係数は「**世代区分が1つ上がると、好感度が何点変わるか**」と読める。
+
+区分はおおむね5歳きざみなので、
+「およそ5歳年上になると何点変わるか」と考えてもよい。
+
+## 変数の加工
+
+```{r}
+#| label: prep
+
+dat <- utas |>
+  mutate(
+    ## --- 従属変数：石破茂への好感度 --------------------------
+    ishiba = na_if(Q42_5, 99),
+
+    ## --- 党派性（7分類）-------------------------------------
+    pid = case_when(
+      Q41 == 99 ~ NA_character_,
+      Q41 == 1  ~ "自民党",
+      Q41 == 2  ~ "立憲民主党",
+      Q41 == 3  ~ "日本維新の会",
+      Q41 == 4  ~ "国民民主党",
+      Q41 == 5  ~ "公明党",
+      Q41 == 12 ~ "無党派",
+      TRUE      ~ "その他の政党"
+    ),
+
+    ## --- 性別 -----------------------------------------------
+    sex = case_when(
+      Q47 == 1 ~ "男性",
+      Q47 == 2 ~ "女性",
+      TRUE     ~ NA_character_
+    ),
+
+    ## --- 世代（年齢層。1〜15をそのまま使う）-------------------
+    gen = na_if(Q48, 99),
+
+    ## --- 結婚状況（「その他・答えない」は欠損に）--------------
+    marital = case_when(
+      Q50 == 1 ~ "未婚",
+      Q50 == 2 ~ "既婚",
+      Q50 == 3 ~ "離別・死別",
+      TRUE     ~ NA_character_
+    ),
+
+    ## --- 最終学歴（4分類にまとめる）--------------------------
+    educ = case_when(
+      Q51 == 1        ~ "中学以下",
+      Q51 == 2        ~ "高校",
+      Q51 %in% c(3,4) ~ "専門・短大",
+      Q51 %in% c(5,6) ~ "大学以上",
+      TRUE            ~ NA_character_
+    ),
+
+    ## --- 生活水準 -------------------------------------------
+    # 元は 1＝上の上 〜 7＝下の下 で、数値が大きいほど「下」になっている
+    # 8 から引くことで、数値が大きいほど「上」になるよう向きをそろえる
+    living = if_else(Q54 == 99, NA_real_, 8 - Q54)
+  )
+```
+
+# 因子変数（factor）への変換
+
+## なぜ変換が必要か
+
+`pid` はいま、ただの**文字列**である。
+このまま `lm()` に入れても分析はできるが、次の2つを制御できない。
+
+- カテゴリの**並び順**（表やグラフでどの順に出るか）
+- **参照カテゴリ**（何と比べた差として係数が計算されるか）
+
+そこで `factor()` を使って、**順番を持つカテゴリ変数**に変換する。
+
+```{r}
+#| label: factor
+
+dat <- dat |>
+  mutate(
+    # factor(変数, levels = c(...)) で、カテゴリの順番を指定する
+    # ★ 最初に書いたものが「参照カテゴリ」になる
+    pid = factor(pid,
+                 levels = c("無党派", "自民党", "立憲民主党",
+                            "日本維新の会", "国民民主党", "公明党",
+                            "その他の政党")),
+    sex     = factor(sex,     levels = c("男性", "女性")),
+    marital = factor(marital, levels = c("未婚", "既婚", "離別・死別")),
+    educ    = factor(educ,    levels = c("中学以下", "高校",
+                                         "専門・短大", "大学以上"))
+  )
+
+# levels() で、いまの順番を確認できる
+levels(dat$pid)
+```
+
+## 参照カテゴリとは
+
+カテゴリ変数を回帰分析に入れると、
+**参照カテゴリを除いた分だけダミー変数がつくられる**。
+
+7分類なら、ダミー変数は 7 − 1 ＝ **6個**である。
+7個すべてを入れると計算ができなくなる（互いに完全に予測できてしまうため）。
+
+各係数の意味は、次のようになる。
+
+> 係数 ＝ そのカテゴリの人は、**参照カテゴリの人に比べて**平均で何点高いか
+
+今回は**無党派**を参照カテゴリにした。
+「支持政党なしの人と比べて」という自然な基準になるからである。
+
+## 分析に使うデータ
+
+```{r}
+#| label: subset
+
+dat_reg <- dat |>
+  # 分析に使う変数だけを取り出す
+  select(ishiba, pid, sex, gen, marital, educ, living) |>
+  # drop_na() は、1つでも欠損がある行を丸ごと除く（リストワイズ除去）
+  drop_na()
+
+nrow(dat_reg)
+```
+
+回帰分析では、**使う変数のどれか1つでも欠損していると、その人は分析から外れる**。
+説明変数を増やすほどケース数が減る点に注意すること。
+
+```{r}
+#| label: tbl-pid
+#| tbl-cap: "党派性の内訳（分析対象者）"
+
+count(dat_reg, pid) |> kable(col.names = c("党派性", "人数"))
+```
+
+{{< pagebreak >}}
+
+# 単回帰分析
+
+## まず図で確かめる
+
+回帰分析を実行する前に、党派性ごとの平均を見ておく。
+
+```{r}
+#| label: fig-mean
+#| fig-cap: "党派性別にみた石破茂への好感度（平均値と95%信頼区間）"
+#| fig-height: 3.4
+
+dat_reg |>
+  group_by(pid) |>
+  summarise(
+    n    = n(),
+    mean = mean(ishiba),
+    se   = sd(ishiba) / sqrt(n()),
+    .groups = "drop"
+  ) |>
+  ggplot(aes(x = pid, y = mean)) +
+  geom_errorbar(aes(ymin = mean - 1.96 * se, ymax = mean + 1.96 * se),
+                width = 0.12) +
+  geom_point(size = 2.6, colour = "#CC0000") +
+  labs(x = "党派性", y = "石破茂への好感度（平均）") +
+  # 軸ラベルが重なるので45度傾ける
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 回帰分析の実行
+
+```{r}
+#| label: model1
+
+# lm(従属変数 ~ 説明変数, data = データ)
+# lm は linear model（線形モデル）の略
+m1 <- lm(ishiba ~ pid, data = dat_reg)
+
+summary(m1)
+```
+
+## 結果の読み方
+
+出力の見方は次のとおりである。
+
+- **(Intercept)**：参照カテゴリ（無党派）の平均値
+- **pid自民党**：自民党寄りの人は、無党派に比べて平均で何点高いか
+- **Std. Error**：その推定値の標準誤差
+- **Pr(>|t|)**：p値
+- **Multiple R-squared**：この説明変数で、従属変数のばらつきの何割を説明できたか
+
+@fig-mean の各点の高さと、切片＋係数の値が対応していることを確認すること。
+
+## 参照カテゴリを変えてみる
+
+参照カテゴリを変えると、**係数の意味も変わる**。
+試しに自民党を基準にしてみる。
+
+```{r}
+#| label: relevel
+
+# relevel(因子変数, ref = "基準にしたいカテゴリ")
+dat_ref <- dat_reg |>
+  mutate(pid2 = relevel(pid, ref = "自民党"))
+
+m1b <- lm(ishiba ~ pid2, data = dat_ref)
+
+# coef() で係数だけを取り出す
+round(coef(m1b), 3)
+```
+
+係数の値は変わったが、**モデルの説明力は変わらない**。
+
+```{r}
+#| label: r2-compare
+
+# summary() の結果から決定係数だけを取り出す
+tibble(
+  ref = c("無党派を基準", "自民党を基準"),
+  r2  = c(summary(m1)$r.squared, summary(m1b)$r.squared)
+) |>
+  kable(digits = 4, col.names = c("参照カテゴリ", "決定係数"))
+```
+
+参照カテゴリは「どこから見るか」を決めるだけで、
+モデルそのものは同じである。
+
+{{< pagebreak >}}
+
+# 重回帰分析
+
+## 説明変数を追加する
+
+党派性だけでは説明しきれない部分を、他の属性で説明できるか試す。
+
+```{r}
+#| label: model2
+
+# 説明変数は + でつなぐ
+m2 <- lm(ishiba ~ pid + sex + gen + marital + educ + living,
+         data = dat_reg)
+
+summary(m2)
+```
+
+## 単回帰との比較
+
+```{r}
+#| label: tbl-r2
+#| tbl-cap: "決定係数の比較"
+
+tibble(
+  model = c("単回帰（党派性のみ）", "重回帰（属性を追加）"),
+  r2    = c(summary(m1)$r.squared, summary(m2)$r.squared),
+  adj   = c(summary(m1)$adj.r.squared, summary(m2)$adj.r.squared)
+) |>
+  kable(digits = 3,
+        col.names = c("モデル", "決定係数", "自由度調整済み決定係数"))
+```
+
+説明変数を増やせば決定係数は必ず上がる。
+そのため、**自由度調整済み決定係数**もあわせて見る。
+
+## 統制するとはどういうことか
+
+自民党の係数に注目してほしい。
+
+```{r}
+#| label: attenuation
+
+# 単回帰と重回帰で、自民党の係数がどう変わったか
+tibble(
+  model = c("単回帰", "重回帰"),
+  coef  = c(coef(m1)["pid自民党"], coef(m2)["pid自民党"])
+) |>
+  kable(digits = 3, col.names = c("モデル", "自民党の係数"))
+```
+
+重回帰では係数が小さくなっているはずである。
+これは、単回帰で「党派性の効果」に見えていたものの一部が、
+実際には**世代など他の要因によるもの**だったことを意味する。
+
+自民党寄りの人は上の世代に多く、世代が上がるほど石破への好感度が高い。
+世代を統制することで、その分が党派性の係数から取り除かれた。
+
+{{< pagebreak >}}
+
+# 回帰分析表
+
+論文やレポートでは、`summary()` の出力をそのまま貼らない。
+**2つのモデルを並べた表**にまとめるのが標準である。
+
+```{r}
+#| label: labels
+
+# 変数名を日本語に置き換えるための対応表
+# 名前（左）は R が出力する係数名、値（右）は表示したい名前
+LABELS <- c(
+  "pid自民党"         = "党派性：自民党",
+  "pid立憲民主党"     = "党派性：立憲民主党",
+  "pid日本維新の会"   = "党派性：日本維新の会",
+  "pid国民民主党"     = "党派性：国民民主党",
+  "pid公明党"         = "党派性：公明党",
+  "pidその他の政党"   = "党派性：その他の政党",
+  "sex女性"           = "性別：女性",
+  "gen"               = "世代（1区分上がるごと）",
+  "marital既婚"       = "結婚：既婚",
+  "marital離別・死別" = "結婚：離別・死別",
+  "educ高校"          = "学歴：高校",
+  "educ専門・短大"    = "学歴：専門・短大",
+  "educ大学以上"      = "学歴：大学以上",
+  "living"            = "生活水準（高いほど上）"
+)
+```
+
+```{r}
+#| label: tbl-reg
+#| tbl-cap: "石破茂への好感度を説明する回帰分析"
+
+# output = "data.frame" にすると、表を普通のデータフレームとして受け取れる
+# それを kable() に渡せば、これまでの表とまったく同じ方法で Word に出せる
+tab <- modelsummary(
+  list("単回帰" = m1, "重回帰" = m2),
+  output   = "data.frame",
+  # coef_map は「表示する係数」と「その名前」を同時に指定する
+  coef_map = LABELS,
+  # stars = TRUE で有意水準の星印をつける
+  stars    = TRUE,
+  # gof_map で、表の下に出す統計量を選ぶ
+  gof_map  = c("nobs", "r.squared", "adj.r.squared")
+)
+
+tab |>
+  # 標準誤差の行では変数名を空欄にして、見やすくする
+  mutate(term = if_else(!is.na(statistic) & statistic == "std.error",
+                        "", term)) |>
+  # 表示に使わない列を落とす
+  select(-part, -statistic) |>
+  kable(align = "lrr", col.names = c("", "単回帰", "重回帰"))
+```
+
+
+@tbl-reg の見方は次のとおりである。
+
+- 上段が係数、下段のかっこ内が標準誤差
+- 星印は有意水準（`*` p<0.05、`**` p<0.01、`***` p<0.001）
+- 空欄は、そのモデルに含まれていない変数
+
+参照カテゴリ（無党派・男性・未婚・中学以下）は表に現れない。
+**表に出ていないカテゴリが基準である**ことを、注として書き添えるとよい。
+
+{{< pagebreak >}}
+
+# キャタピラプロット
+
+回帰係数を、信頼区間つきの点で並べた図である。
+**係数の大きさと不確かさを一目で比べられる**。
+
+## 自分で作る
+
+```{r}
+#| label: fig-caterpillar
+#| fig-cap: "重回帰分析の係数と95%信頼区間"
+#| fig-height: 4.6
+
+# tidy() は分析結果を「1行1係数」のデータフレームに変換する関数
+# conf.int = TRUE で信頼区間も計算させる
+coefs <- broom::tidy(m2, conf.int = TRUE)
+
+coefs |>
+  # 切片を除き、対応表にある係数だけを残す
+  filter(term %in% names(LABELS)) |>
+  # 係数名を日本語に置き換える
+  # levels を逆順にすると、表の上から順に並ぶ
+  mutate(label = factor(LABELS[term], levels = rev(LABELS))) |>
+  ggplot(aes(x = estimate, y = label)) +
+  # 0 の位置に縦線を引く。区間がこの線をまたげば「有意でない」
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  # geom_pointrange() で点と区間をまとめて描く
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high),
+                  size = 0.35, colour = "#052452") +
+  labs(x = "係数（95%信頼区間）", y = NULL)
+```
+
+@fig-caterpillar で、**区間が破線をまたいでいる変数**は
+「効果があるとはいえない」ものである。
+
+## 2つのモデルを重ねる
+
+単回帰と重回帰を並べると、統制の効果が視覚的にわかる。
+
+```{r}
+#| label: fig-compare
+#| fig-cap: "単回帰と重回帰の係数の比較"
+#| fig-height: 3.6
+
+# bind_rows() で2つの結果を縦につなげる
+bind_rows(
+  broom::tidy(m1, conf.int = TRUE) |> mutate(model = "単回帰"),
+  broom::tidy(m2, conf.int = TRUE) |> mutate(model = "重回帰")
+) |>
+  # 党派性の係数だけに絞る
+  filter(str_starts(term, "pid")) |>
+  mutate(label = factor(LABELS[term], levels = rev(LABELS))) |>
+  ggplot(aes(x = estimate, y = label, colour = model)) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  # position_dodge() で2つのモデルを上下にずらして描く
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high),
+                  size = 0.32,
+                  position = position_dodge(width = 0.55)) +
+  scale_colour_manual(values = c("単回帰" = "#8A6D00",
+                                 "重回帰" = "#052452")) +
+  labs(x = "係数（95%信頼区間）", y = NULL, colour = "モデル")
+```
+
+@fig-compare のとおり、重回帰では党派性の係数が全体に小さくなっている。
+
+{{< pagebreak >}}
+
+# パッケージを使う
+
+キャタピラプロットは、専用のパッケージを使えば**1行**で描ける。
+ここでもパッケージを自分でインストールしてみる。
+
+## インストール
+
+Console に次を入力する。
+
+```{r}
+#| label: install-sjplot
+#| eval: false
+
+install.packages("sjPlot")
+```
+
+::: {.callout-note title="実行するときの注意"}
+- この命令は **Console に直接入力する**（qmd のチャンクには書かない）
+- `sjPlot` は関連パッケージが多いため、**5分以上かかることがある**
+- 「個人用ライブラリを作りますか」と聞かれたら `yes` と答える
+- 途中で止まったように見えても、待つこと
+:::
+
+## 使ってみる
+
+インストールが終わったら、下のチャンクの `#| eval: false` の行を
+**削除してから** Render すること。
+
+```{r}
+#| label: sjplot-demo
+#| eval: F
+#| fig-height: 4.6
+
+library(sjPlot)
+
+# plot_model() は回帰結果からキャタピラプロットを描く
+# sort.est = TRUE で係数の大きい順に並べ替える
+plot_model(m2, sort.est = TRUE, show.values = TRUE, value.offset = 0.3)
+```
+
+自分で作った @fig-caterpillar と見比べてみること。
+中身は同じものである。
+
+# 考察
+
+以下について、表と図を根拠に述べること。
+
+1. 単回帰分析で、どの党派性の人が石破茂への好感度が高かったか。
+   無党派と比べてどれくらいの差か。
+2. 重回帰分析で、党派性以外に有意な効果を持っていた変数は何か。
+   その符号（プラスかマイナスか）は、どのような意味を持つか。
+   世代の係数は「区分が1つ上がると何点変わるか」を表している。
+   18・19歳（区分1）と85歳以上（区分15）では、何点の差になるか。
+3. @fig-compare を見て、党派性の係数はなぜ小さくなったのか説明すること。
+
+
+# 出典
+
+東京大学谷口研究室・朝日新聞社共同調査（2025年）
+
+<https://www.masaki.j.u-tokyo.ac.jp/utas/>
+

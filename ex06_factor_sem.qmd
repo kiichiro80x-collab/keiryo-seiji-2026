@@ -1,0 +1,431 @@
+---
+title: "演習6　態度の構造を測る"
+subtitle: "東大朝日調査／因子分析から構造方程式モデリングへ"
+author: "学籍番号 ○○○○○○○○　氏名"
+date: today
+date-format: "YYYY年M月D日"
+format:
+  docx:
+    ## ★ Windows の人はこのまま。Mac の人は reference-mac.docx に書き換える
+    reference-doc: reference-win.docx
+    number-sections: true
+    fig-align: center
+    tbl-cap-location: top
+    fig-cap-location: bottom
+language:
+  crossref-fig-title: "図"
+  crossref-tbl-title: "表"
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: "ragg_png"
+    dpi: 300
+    fig-width: 6
+    fig-height: 3.7
+    out-width: "100%"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("setup.R")
+```
+
+# この演習の目標
+
+これまでの演習では、質問項目を**1つずつ**分析してきた。
+しかし「同性婚に賛成か」「夫婦別姓に賛成か」という質問は、
+その背後にある**同じ考え方**を別の角度から尋ねたものかもしれない。
+
+この演習では、そうした**直接は測れないもの（潜在変数）**を扱う。
+
+1. 探索的因子分析（EFA）で、争点態度がいくつの軸に整理できるかを調べる
+2. 確認的因子分析（CFA）で、その構造が妥当かを確かめる
+3. 構造方程式モデリング（SEM）で、**因子から石破茂への好感度を説明する**
+
+::: {.callout-note title="インストールするパッケージ"}
+Console で次の1行を実行すること。**5分以上かかる場合がある**。
+
+`install.packages(c("psych", "lavaan", "semPlot"))`
+:::
+
+```{r}
+#| label: check-pkg
+
+# 必要なパッケージが入っているか確認する
+need <- c("psych", "lavaan", "semPlot")
+miss <- need[!vapply(need, requireNamespace, logical(1), quietly = TRUE)]
+if (length(miss) > 0) {
+  stop("先に次を実行してください:\n  install.packages(c(",
+       paste0('"', miss, '"', collapse = ", "), "))",
+       call. = FALSE)
+}
+
+library(psych)
+library(lavaan)
+```
+
+# データの準備
+
+## 使う項目
+
+`Q43` は12個の政策争点について賛否を尋ねた設問である。
+
+**1＝賛成、2＝どちらかと言えば賛成、3＝どちらとも言えない、
+4＝どちらかと言えば反対、5＝反対、99＝無回答**
+
+```{r}
+#| label: load
+
+utas <- read_csv("data/2025UTASV20250812.csv", show_col_types = FALSE)
+```
+
+## 向きをそろえる
+
+数値が大きいほど「賛成」になるよう、6から引いて反転させる。
+
+```{r}
+#| label: prep
+
+items <- paste0("Q43_", 1:12)
+
+dat <- utas |>
+  # across() は、複数の列に同じ処理をまとめて適用する関数
+  # all_of(items) で「items に入っている列すべて」を指定する
+  mutate(across(all_of(items), ~ 6 - na_if(.x, 99))) |>
+  # 石破茂への好感度（0〜10）
+  mutate(ishiba = na_if(Q42_5, 99))
+```
+
+```{r}
+#| label: tbl-items
+#| tbl-cap: "Q43の12項目"
+
+tibble(
+  var   = items,
+  label = c("防衛力の強化", "北朝鮮に圧力", "非核三原則の堅持",
+            "小さな政府", "公共事業による雇用", "財政出動",
+            "消費税10％超もやむなし", "富裕層への課税強化",
+            "国民負担の増加もやむなし", "治安のためプライバシー制約",
+            "同性婚を認める", "夫婦別姓を認める")
+) |>
+  kable(col.names = c("変数名", "内容"))
+```
+
+{{< pagebreak >}}
+
+# 探索的因子分析
+
+## 因子分析に向いているか
+
+```{r}
+#| label: efa-data
+
+# 12項目だけを取り出し、欠損のある回答者を除く
+d_efa <- dat |>
+  select(all_of(items)) |>
+  drop_na()
+
+nrow(d_efa)
+```
+
+```{r}
+#| label: kmo
+
+# KMO は「項目どうしが十分に相関しているか」を測る指標
+# 全体の値（Overall MSA）が 0.8 以上なら良好、0.5 未満は不適
+KMO(d_efa)
+```
+
+```{r}
+#| label: bartlett
+
+# Bartlettの球面性検定
+# 「相関行列は単位行列（＝どの項目も無相関）である」が帰無仮説
+# p < 0.05 なら「相関がある」ので、因子分析を行う意味がある
+cortest.bartlett(d_efa)
+```
+
+## 因子数を決める
+
+```{r}
+#| label: fig-parallel
+#| fig-cap: "平行分析による因子数の決定"
+#| fig-height: 3.6
+
+# 平行分析：ランダムなデータから作った固有値と比べ、
+# それを上回る因子だけを採用する
+par(family = JP_FIG)
+fa.parallel(d_efa, fa = "fa", n.iter = 50)
+```
+
+@fig-parallel で、実線（実際のデータ）が破線（ランダムデータ）を
+上回っている因子の数が目安になる。
+
+## 因子分析の実行
+
+```{r}
+#| label: efa
+
+# fa(データ, nfactors = 因子数, rotate = 回転の方法)
+#   rotate = "promax" は斜交回転（因子間の相関を許す）
+#   社会科学では、態度どうしは相関するのが普通なので斜交回転を使う
+efa <- fa(d_efa, nfactors = 3, rotate = "promax")
+
+# cut = 0.4 で、絶対値0.4未満の負荷量を表示しない
+# sort = TRUE で、負荷量の大きい順に項目を並べ替える
+print(efa, cut = 0.4, sort = TRUE)
+```
+
+## 結果の読み方
+
+出力の見方は次のとおりである。
+
+- **MR1, MR2, MR3**：各因子への因子負荷量
+- **h2**：共通性。その項目が因子で説明された割合（低い項目は候補から外す）
+- **u2**：独自性（1 − h2）
+- **Proportion Var**：各因子の寄与率
+- **Cumulative Var**：累積寄与率
+
+負荷量が0.4に届かない項目や、複数の因子に同じくらい乗る項目
+（**二重負荷**）は、尺度から外すことを検討する。
+
+{{< pagebreak >}}
+
+# 確認的因子分析
+
+## 分析に使う項目を絞る
+
+EFAの結果をふまえ、解釈しやすい3つの因子を立てる。
+
+| 因子 | 項目 | 意味 |
+|:--|:--|:--|
+| 安全保障タカ派 | 防衛力強化、北朝鮮に圧力、非核三原則 | 強硬な安全保障政策への支持 |
+| 社会的リベラル | 同性婚、夫婦別姓 | 多様な家族のあり方への寛容 |
+| 負担受容 | 消費税、国民負担増 | 増税・負担増の受け入れ |
+
+: CFAで立てる3因子
+
+::: {.callout-important title="非核三原則だけは向きが逆"}
+「防衛力強化に賛成」「北朝鮮に圧力」はどちらもタカ派的な態度だが、
+**「非核三原則の堅持に賛成」はハト派的**である。
+
+そこで非核三原則だけは、**元の並び（1＝賛成 … 5＝反対）に戻す**。
+こうすると「数値が大きいほど非核に反対＝タカ派」となり、
+他の2項目と向きがそろう。
+:::
+
+```{r}
+#| label: cfa-data
+
+d_cfa <- dat |>
+  mutate(
+    # 安全保障タカ派
+    bouei  = Q43_1,       # 防衛力強化に賛成
+    atsu   = Q43_2,       # 北朝鮮に圧力
+    hikaku = 6 - Q43_3,   # ★向きを戻す（非核三原則に反対＝タカ派）
+    # 社会的リベラル
+    dousei = Q43_11,      # 同性婚に賛成
+    bessei = Q43_12,      # 夫婦別姓に賛成
+    # 負担受容
+    shohi  = Q43_7,       # 消費税増もやむなし
+    futan  = Q43_9        # 国民負担増もやむなし
+  ) |>
+  select(bouei, atsu, hikaku, dousei, bessei, shohi, futan, ishiba) |>
+  drop_na()
+
+nrow(d_cfa)
+```
+
+## モデルを書く
+
+```{r}
+#| label: cfa-model
+
+# lavaan では、モデルを「文字列」として書く
+#   =~ は「測る」（左が潜在変数、右が観測変数）
+#   ~  は「回帰」
+#   ~~ は「相関」
+model_cfa <- '
+  hawk    =~ bouei + atsu + hikaku
+  liberal =~ dousei + bessei
+  burden  =~ shohi + futan
+'
+```
+
+```{r}
+#| label: cfa-fit
+
+# cfa() で確認的因子分析を実行する
+fit_cfa <- cfa(model_cfa, data = d_cfa)
+
+# fit.measures = TRUE で適合度指標、standardized = TRUE で標準化解を表示
+summary(fit_cfa, fit.measures = TRUE, standardized = TRUE)
+```
+
+## 適合度を確認する
+
+```{r}
+#| label: tbl-fit
+#| tbl-cap: "適合度指標"
+
+# fitMeasures() で必要な指標だけを取り出せる
+fm <- fitMeasures(fit_cfa,
+                  c("chisq", "df", "pvalue", "cfi", "tli", "rmsea", "srmr"))
+
+tibble(
+  index = c("χ²", "自由度", "p値", "CFI", "TLI", "RMSEA", "SRMR"),
+  value = as.numeric(fm),
+  crit  = c("—", "—", "0.05より大きいのが理想",
+            "0.95以上", "0.95以上", "0.06以下", "0.08以下")
+) |>
+  kable(digits = 3, col.names = c("指標", "値", "目安"))
+```
+
+χ²検定は標本が大きいとほぼ必ず有意になるため、
+**CFI・TLI・RMSEA・SRMR をあわせて見る**のが作法である。
+
+## パス図
+
+```{r}
+#| label: fig-cfa
+#| fig-cap: "確認的因子分析のパス図（標準化係数）"
+#| fig-height: 4.0
+
+library(semPlot)
+
+par(family = JP_FIG)
+
+# whatLabels = "std" で標準化係数を表示
+# layout = "tree" で階層的に並べる
+semPaths(fit_cfa, whatLabels = "std", layout = "tree",
+         edge.label.cex = 0.8, sizeMan = 6, sizeLat = 9)
+```
+
+{{< pagebreak >}}
+
+# 構造方程式モデリング
+
+## モデルを組む
+
+CFAで作った3つの因子を**説明変数**として、
+石破茂への好感度（観測変数）を説明する。
+
+> **仮説**：石破政権は防衛費の増額と少子化対策のため、
+> 国民負担の増加を求める立場をとった。
+> したがって、**負担の増加を受け入れる人ほど、石破への好感度が高い**。
+
+```{r}
+#| label: sem-model
+
+model_sem <- '
+  # 測定モデル（CFAと同じ）
+  hawk    =~ bouei + atsu + hikaku
+  liberal =~ dousei + bessei
+  burden  =~ shohi + futan
+
+  # 構造モデル（潜在変数 → 観測変数の回帰）
+  ishiba ~ hawk + liberal + burden
+'
+```
+
+```{r}
+#| label: sem-fit
+
+# sem() で構造方程式モデルを推定する
+fit_sem <- sem(model_sem, data = d_cfa)
+
+summary(fit_sem, fit.measures = TRUE, standardized = TRUE)
+```
+
+## 結果を表にする
+
+```{r}
+#| label: tbl-sem
+#| tbl-cap: "構造モデルの推定結果（石破好感度への効果）"
+
+# parameterEstimates() で結果をデータフレームとして取り出せる
+# standardized = TRUE で標準化係数（std.all）も付く
+est <- parameterEstimates(fit_sem, standardized = TRUE)
+
+est |>
+  # op == "~" が回帰の行
+  filter(op == "~") |>
+  mutate(rhs = case_when(
+    rhs == "hawk"    ~ "安全保障タカ派",
+    rhs == "liberal" ~ "社会的リベラル",
+    rhs == "burden"  ~ "負担受容"
+  )) |>
+  select(rhs, est, se, z, pvalue, std.all) |>
+  kable(digits = 3,
+        col.names = c("説明変数", "係数", "標準誤差", "z値", "p値", "標準化係数"))
+```
+
+## 適合度
+
+```{r}
+#| label: tbl-fit-sem
+#| tbl-cap: "SEMの適合度指標"
+
+fm2 <- fitMeasures(fit_sem,
+                   c("chisq", "df", "pvalue", "cfi", "tli", "rmsea", "srmr"))
+
+tibble(
+  index = c("χ²", "自由度", "p値", "CFI", "TLI", "RMSEA", "SRMR"),
+  value = as.numeric(fm2)
+) |>
+  kable(digits = 3, col.names = c("指標", "値"))
+```
+
+## パス図
+
+```{r}
+#| label: fig-sem
+#| fig-cap: "構造方程式モデルのパス図（標準化係数）"
+#| fig-height: 4.2
+
+par(family = JP_FIG)
+
+semPaths(fit_sem, whatLabels = "std", layout = "tree2",
+         edge.label.cex = 0.8, sizeMan = 5.5, sizeLat = 8,
+         rotation = 2)
+```
+
+@fig-sem の右端が石破好感度、楕円が3つの因子である。
+潜在変数どうしをつなぐ双方向の矢印は、因子間の相関を表す。
+
+{{< pagebreak >}}
+
+# 考察
+
+以下について、表と図を根拠に述べること。
+
+1. 平行分析はいくつの因子を示したか。
+   EFAの結果、因子負荷量が小さかった項目や二重負荷の項目はあったか。
+2. CFAの適合度指標をどう評価するか。
+   複数の指標が食い違った場合、どう判断するか。
+3. 3つの因子のうち、石破への好感度に有意な効果を持っていたのはどれか。
+   仮説は支持されたか。
+4. 効果が有意でなかった因子について、
+   なぜ関係が見られなかったと考えられるか。
+5. 「同性婚に賛成か」という質問1つで分析するのと、
+   複数の項目から因子を作って分析するのとでは、何が違うか。
+
+::: {.callout-important title="解釈するときの注意"}
+- SEMは因果関係を証明する手法ではない。
+  矢印の向きは**分析者が仮定したもの**である
+- 「石破が好きだから負担増もやむなしと考える」という逆の向きもありうる
+- 因子の名前は分析者がつけたものである。
+  その名前が中身を正しく表しているかは、常に検討の余地がある
+- 適合度が良いことは「モデルが正しい」ことを意味しない。
+  同じ適合度を示す別のモデルが存在しうる
+:::
+
+# 出典
+
+東京大学谷口研究室・朝日新聞社共同調査（2025年）
+
+<https://www.masaki.j.u-tokyo.ac.jp/utas/>

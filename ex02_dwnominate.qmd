@@ -1,0 +1,495 @@
+---
+title: "演習2　議員のイデオロギー位置を分析する"
+subtitle: "DW-NOMINATE／散布図・相関・クラスター分析"
+author: "学籍番号 ○○○○○○○○　氏名"
+date: today
+date-format: "YYYY年M月D日"
+format:
+  docx:
+    ## ★ Windows の人はこのまま。Mac の人は reference-mac.docx に書き換える
+    reference-doc: reference-win.docx
+    number-sections: true
+    fig-align: center
+    tbl-cap-location: top
+    fig-cap-location: bottom
+language:
+  crossref-fig-title: "図"
+  crossref-tbl-title: "表"
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: "ragg_png"
+    dpi: 300
+    fig-width: 6
+    fig-height: 3.7
+    out-width: "100%"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("setup.R")
+```
+
+# この演習の目標
+
+- 散布図と相関係数で、2つの変数の関係を記述できるようになる
+- グループごとに分けて計算する方法を身につける
+- k-means法とウォード法によるクラスター分析の違いを理解する
+
+使うデータは **DW-NOMINATE** である。アメリカ連邦議会の全議員について、
+議会での投票行動から推定したイデオロギー位置が収録されている。
+
+- `nominate_dim1`（第1次元）：経済的な争点についての位置。大きいほど保守
+- `nominate_dim2`（第2次元）：人種・社会的な争点についての位置
+
+# 準備
+
+## データの読み込み
+
+```{r}
+#| label: load
+
+# read_csv() は CSV ファイルを読み込む関数
+cong <- read_csv("data/HSall_members.csv", show_col_types = FALSE)
+
+# dim() は「行数 列数」を返す
+dim(cong)
+```
+
+## データの下ごしらえ
+
+分析の前に、データを扱いやすい形に整える。
+
+```{r}
+#| label: prep
+
+dw <- cong |>
+  # (1) 大統領を除く
+  #     chamber は "House"（下院）"Senate"（上院）"President"（大統領）
+  #     filter() は条件に合う行だけを残す関数。!= は「等しくない」
+  filter(chamber != "President") |>
+
+  # (2) 議会の開始年をつくる
+  #     第1議会は1789年に始まり、以後2年ごとに新しい議会が始まる
+  #     mutate() は新しい列を追加する関数
+  mutate(year = 1789 + (congress - 1) * 2) |>
+
+  # (3) 政党コードを日本語のラベルに置き換える
+  #     case_when() は「条件 ~ 値」を並べて場合分けをする関数
+  mutate(party = case_when(
+    party_code == 100 ~ "民主党",
+    party_code == 200 ~ "共和党",
+    TRUE              ~ "その他"   # 上のどれにも当てはまらない場合
+  )) |>
+
+  # (4) 院の名前も日本語にする
+  #     if_else(条件, 真のときの値, 偽のときの値)
+  mutate(house = if_else(chamber == "House", "下院", "上院")) |>
+
+  # (5) イデオロギー位置が欠けているケースを除く
+  #     is.na() は欠損かどうかを判定する。! を付けて「欠損でない」
+  filter(!is.na(nominate_dim1), !is.na(nominate_dim2))
+
+dim(dw)
+```
+
+きちんと処理できたか確認する。
+
+```{r}
+#| label: check
+
+# range() は最小値と最大値を返す
+range(dw$year)
+
+# count() はカテゴリごとの件数を数える
+count(dw, house)
+count(dw, party)
+```
+
+{{< pagebreak >}}
+
+# 全体の相関と散布図
+
+## 散布図
+
+```{r}
+#| label: fig-all
+#| fig-cap: "全議員のイデオロギー位置（第1議会〜最新議会）"
+
+ggplot(dw, aes(x = nominate_dim1, y = nominate_dim2)) +
+  # alpha は点の透明度（0に近いほど薄い）
+  # 点が多く重なるので、薄くして分布が見えるようにする
+  geom_point(alpha = 0.1, size = 0.4) +
+  labs(x = "第1次元（経済）", y = "第2次元（人種・社会）")
+```
+
+## 相関係数
+
+```{r}
+#| label: cor-all
+
+# cor(x, y) は2つの変数の相関係数を計算する関数
+cor(dw$nominate_dim1, dw$nominate_dim2)
+```
+
+@fig-all を見ると、点が非常に多く重なっている。
+全期間・全議員をまとめた相関係数は、異なる時代の議員を混ぜた値である点に注意する。
+
+## 散布図が円形に見えるのはなぜか
+
+@fig-all は、全体として円のような形をしている。これはデータの作られ方による。
+DW-NOMINATEは、議員の位置を**半径1の円の内側に収まるように**推定するためである。
+
+
+{{< pagebreak >}}
+
+# 上院・下院に分けた分析
+
+## 相関係数
+
+```{r}
+#| label: tbl-cor-house
+#| tbl-cap: "院ごとの相関係数"
+
+dw |>
+  # group_by() でグループを指定し、summarise() でグループごとに計算する
+  group_by(house) |>
+  summarise(
+    n = n(),                                   # n() は件数
+    r = cor(nominate_dim1, nominate_dim2)      # 相関係数
+  ) |>
+  kable(digits = 3, col.names = c("院", "人数", "相関係数"))
+```
+
+## 散布図
+
+```{r}
+#| label: fig-house
+#| fig-cap: "院ごとのイデオロギー位置"
+#| fig-height: 3.4
+
+ggplot(dw, aes(x = nominate_dim1, y = nominate_dim2)) +
+  geom_point(alpha = 0.1, size = 0.4) +
+  # facet_wrap(~ 変数) でグループごとに図を並べる
+  facet_wrap(~ house) +
+  labs(x = "第1次元（経済）", y = "第2次元（人種・社会）")
+```
+
+{{< pagebreak >}}
+
+# 政党別に分けた分析
+
+民主党・共和党の議員だけを取り出して比較する。
+
+```{r}
+#| label: tbl-cor-party
+#| tbl-cap: "院と政党ごとの相関係数"
+
+dw2 <- dw |> filter(party != "その他")
+
+dw2 |>
+  # group_by() には複数の変数を指定できる
+  group_by(house, party) |>
+  summarise(
+    n = n(),
+    r = cor(nominate_dim1, nominate_dim2),
+    .groups = "drop"        # 計算のあとグループ分けを解除する
+  ) |>
+  kable(digits = 3, col.names = c("院", "政党", "人数", "相関係数"))
+```
+
+```{r}
+#| label: fig-party
+#| fig-cap: "院と政党ごとのイデオロギー位置"
+#| fig-height: 3.4
+
+ggplot(dw2, aes(x = nominate_dim1, y = nominate_dim2, colour = party)) +
+  geom_point(alpha = 0.15, size = 0.4) +
+  # scale_colour_manual() で色を自分で指定する
+  scale_colour_manual(values = c("民主党" = "blue", "共和党" = "red")) +
+  facet_wrap(~ house) +
+  labs(x = "第1次元（経済）", y = "第2次元（人種・社会）", colour = "政党")
+```
+
+@tbl-cor-party の値は、@tbl-cor-house の値とかなり違うはずである。
+なぜそうなるのかを考えてみること。
+
+{{< pagebreak >}}
+
+# 100年間の推移（10年ごと）
+
+最新の議会から10年ずつさかのぼって、100年前までの相関係数を計算する。
+
+```{r}
+#| label: years
+
+# max() は最大値。データに含まれる最後の年を調べる
+last_year <- max(dw$year)
+last_year
+
+# seq(開始, 終了, 間隔) で等間隔の数列をつくる
+# by = -10 とすると10ずつ減っていく
+years10 <- seq(from = last_year, to = last_year - 100, by = -10)
+years10
+```
+
+```{r}
+#| label: tbl-cor-decade
+#| tbl-cap: "10年ごとの相関係数（最新から100年前まで）"
+
+cor_decade <- dw |>
+  # %in% は「このなかのどれかに一致する」という条件
+  filter(year %in% years10) |>
+  group_by(year) |>
+  summarise(
+    congress = first(congress),   # first() はグループの最初の値
+    n = n(),
+    r = cor(nominate_dim1, nominate_dim2),
+    .groups = "drop"
+  ) |>
+  # arrange() は並べ替え。desc() で降順（新しい年が上）
+  arrange(desc(year))
+
+cor_decade |>
+  kable(digits = 3, col.names = c("開始年", "議会", "人数", "相関係数"))
+```
+
+```{r}
+#| label: fig-cor-decade
+#| fig-cap: "相関係数の推移"
+#| fig-height: 3.2
+
+ggplot(cor_decade, aes(x = year, y = r)) +
+  geom_line() +
+  geom_point() +
+  # 相関がゼロの位置に横線を引く
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  labs(x = "議会の開始年", y = "相関係数")
+```
+
+{{< pagebreak >}}
+
+# クラスター分析
+
+議員をイデオロギー位置にもとづいて機械的にグループ分けし、
+その結果が政党とどれくらい一致するかを見る。
+
+比較する2時点を決めておく。
+
+```{r}
+#| label: cluster-years
+
+year_new <- last_year          # 最新の年
+year_old <- last_year - 30     # その30年前
+
+c(year_new, year_old)
+```
+
+```{r}
+#| label: cluster-data
+
+# 2つの年のデータをそれぞれ取り出す
+dat_new <- dw |> filter(year == year_new)
+dat_old <- dw |> filter(year == year_old)
+
+# クラスター分析に使うのはイデオロギー2変数だけ
+# select() は列を選ぶ関数
+x_new <- dat_new |> select(nominate_dim1, nominate_dim2)
+x_old <- dat_old |> select(nominate_dim1, nominate_dim2)
+
+nrow(x_new)
+nrow(x_old)
+```
+
+## k-means法（最新の議会）
+
+```{r}
+#| label: km-new
+
+# k-means法は出発点を乱数で決めるため、実行するたび結果が変わりうる
+# set.seed() で乱数を固定すると、何度実行しても同じ結果になる
+set.seed(2026)
+
+# kmeans(データ, centers = クラスター数)
+km_new <- kmeans(x_new, centers = 2)
+
+# $size は各クラスターの人数
+km_new$size
+
+# $centers は各クラスターの中心（重心）の座標
+km_new$centers
+```
+
+```{r}
+#| label: fig-km-new
+#| fig-cap: "k-means法によるクラスター（最新議会）"
+
+# $cluster に各議員の所属クラスター番号が入っている
+# factor() で「数値」ではなく「カテゴリ」として扱う
+dat_new <- dat_new |> mutate(cl_km = factor(km_new$cluster))
+
+ggplot(dat_new, aes(x = nominate_dim1, y = nominate_dim2, colour = cl_km)) +
+  geom_point() +
+  labs(x = "第1次元（経済）", y = "第2次元（人種・社会）", colour = "クラスター")
+```
+
+```{r}
+#| label: tbl-km-new
+#| tbl-cap: "政党（行）とクラスター（列）のクロス表：最新議会・k-means法"
+
+# table(変数1, 変数2) でクロス表をつくる
+table(dat_new$party, dat_new$cl_km) |> kable()
+```
+
+## ウォード法（最新の議会）
+
+```{r}
+#| label: fig-hc-new
+#| fig-cap: "ウォード法によるデンドログラム（最新議会）"
+#| fig-height: 3.4
+
+# dist() はケースどうしの距離（似ていない度合い）を計算する
+d_new <- dist(x_new)
+
+# hclust(距離, method = "方法") で階層クラスター分析
+# ウォード法は "ward.D2" と指定する
+hc_new <- hclust(d_new, method = "ward.D2")
+
+# base の作図で日本語を出すための指定（setup.R で決めたフォントを使う）
+par(family = JP_FIG)
+
+# labels = FALSE で議員名のラベルを消す（500人分は読めないため）
+plot(hc_new, labels = FALSE, hang = -1,
+     main = "", sub = "", xlab = "", ylab = "高さ（非類似度）")
+```
+
+```{r}
+#| label: tbl-hc-new
+#| tbl-cap: "政党（行）とクラスター（列）のクロス表：最新議会・ウォード法"
+
+# cutree(結果, k = 分けたい数) でデンドログラムを切り分ける
+cl_hc_new <- cutree(hc_new, k = 2)
+
+table(dat_new$party, cl_hc_new) |> kable()
+```
+
+{{< pagebreak >}}
+
+## k-means法（30年前の議会）
+
+```{r}
+#| label: km-old
+
+set.seed(2026)
+km_old <- kmeans(x_old, centers = 2)
+
+km_old$size
+km_old$centers
+```
+
+```{r}
+#| label: fig-km-old
+#| fig-cap: "k-means法によるクラスター（30年前の議会）"
+
+dat_old <- dat_old |> mutate(cl_km = factor(km_old$cluster))
+
+ggplot(dat_old, aes(x = nominate_dim1, y = nominate_dim2, colour = cl_km)) +
+  geom_point() +
+  labs(x = "第1次元（経済）", y = "第2次元（人種・社会）", colour = "クラスター")
+```
+
+```{r}
+#| label: tbl-km-old
+#| tbl-cap: "政党（行）とクラスター（列）のクロス表：30年前・k-means法"
+
+table(dat_old$party, dat_old$cl_km) |> kable()
+```
+
+## ウォード法（30年前の議会）
+
+```{r}
+#| label: fig-hc-old
+#| fig-cap: "ウォード法によるデンドログラム（30年前の議会）"
+#| fig-height: 3.4
+
+d_old  <- dist(x_old)
+hc_old <- hclust(d_old, method = "ward.D2")
+
+par(family = JP_FIG)
+plot(hc_old, labels = FALSE, hang = -1,
+     main = "", sub = "", xlab = "", ylab = "高さ（非類似度）")
+```
+
+```{r}
+#| label: tbl-hc-old
+#| tbl-cap: "政党（行）とクラスター（列）のクロス表：30年前・ウォード法"
+
+cl_hc_old <- cutree(hc_old, k = 2)
+
+table(dat_old$party, cl_hc_old) |> kable()
+```
+
+# 考察
+
+以下について、表と図を根拠に述べること。
+
+1. 最新の議会と30年前とで、クラスターと政党の一致の度合いはどう違うか。
+2. k-means法とウォード法で結果は一致したか。一致しない場合、どちらをどう解釈するか。
+3. @fig-cor-decade の相関係数の推移は、クラスター分析の結果とどう対応しているか。
+
+::: {.callout-note title="2つの方法の違い"}
+k-means法は最初の分割点を乱数で決めるため、実行するたびに結果が変わることがある。
+`set.seed()` で乱数を固定しているのはそのためである。
+ウォード法は結果が安定しているが、ケースが多いとデンドログラムが読みにくくなる。
+:::
+
+{{< pagebreak >}}
+
+# 付録：Wordでページを区切る方法
+
+この文書では、章の変わり目でページが変わっている。
+Quartoでは、次の1行を本文中に書くとその位置でページが変わる。
+
+```
+{{{< pagebreak >}}}
+```
+
+## 書き方の注意
+
+- 行を1行まるごと使って書く。前後には**空行を入れる**
+- チャンクの中ではなく、**本文（Markdown）の側**に書く
+- Word だけでなく PDF や HTML でも使える（HTMLでは無視される）
+
+正しい書き方の例を示す。
+
+```
+ここまでが1ページ目の内容である。
+
+{{{< pagebreak >}}}
+
+# 次の章
+
+ここからが2ページ目になる。
+```
+
+## うまくいかないときは
+
+| 症状 | 原因 |
+|:---|:---|
+| 何も起きない | 前後に空行がない／チャンクの中に書いている |
+| そのまま文字が出る | 括弧や不等号が全角になっている |
+| 位置がずれる | 図表の直後に置くと、図の送りの都合でずれることがある |
+
+: ページ区切りがうまくいかない場合
+
+## 出典
+
+Lewis, Jeffrey B., Keith Poole, Howard Rosenthal, Adam Boche,
+Aaron Rudkin, and Luke Sonnet. *Voteview: Congressional Roll-Call Votes Database*.
+<https://voteview.com/>
+
+
